@@ -852,8 +852,26 @@ function showScreen(s){if(screen===s)return;screen=s;$('lobby').hidden=s!=='lobb
 function genCode(){const A='ABCDEFGHJKLMNPQRSTUVWXYZ';let s='';for(let i=0;i<4;i++)s+=A[Math.floor(Math.random()*A.length)];return s;}
 function resetLocal(){lastEvSeen=-1;aSeq=0;sSeq=0;tbSeq=0;hnSeq=0;jpSeq=0;joy=[0,0];for(const k in keys)keys[k]=0;for(const k in lastSeq)delete lastSeq[k];curView=null;lastS=null;resetScene(SG);}
 function myPresBase(){return {n:myName,want:wantCart?1:0,sk:mySp,co:myCo};}
+// ----- salas online fora do claude.ai: PeerJS (WebRTC), o anfitrião é o centro da sala
+function loadPeerJS(){if(window.Peer)return Promise.resolve();return new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js';s.onload=()=>res();s.onerror=()=>rej(new Error('peerjs'));document.head.appendChild(s);});}
+function makePeerRoom(){const PFX='carrinho-desgovernado-v1-';return{join:async(name,opt)=>{await loadPeerJS();const host=!!(opt&&opt.host);const hid=PFX+name;
+  const peer=host?new Peer(hid,{debug:0}):new Peer({debug:0});
+  await new Promise((res,rej)=>{const to=setTimeout(()=>rej(new Error('timeout')),12000);peer.on('open',()=>{clearTimeout(to);res();});peer.on('error',e=>{clearTimeout(to);rej(e);});});
+  const me=peer.id,pres={},conns={};pres[me]={};let alive=true;
+  const send=(c,m)=>{try{if(c&&c.open)c.send(m);}catch(e){}};const apply=(id,d)=>{pres[id]=Object.assign(pres[id]||{},d);};
+  if(host){peer.on('connection',c=>{c.on('open',()=>{conns[c.peer]=c;pres[c.peer]=pres[c.peer]||{};send(c,{t:'snap',p:pres});});
+      c.on('data',m=>{if(m&&m.t==='u'){apply(c.peer,m.d);for(const k in conns)if(k!==c.peer)send(conns[k],{t:'u',id:c.peer,d:m.d});}});
+      const gone=()=>{if(!conns[c.peer])return;delete conns[c.peer];delete pres[c.peer];for(const k in conns)send(conns[k],{t:'x',id:c.peer});};c.on('close',gone);c.on('error',gone);});}
+  else{const c=peer.connect(hid,{reliable:true,serialization:'json'});
+    await new Promise((res,rej)=>{const to=setTimeout(()=>rej(new Error('sem sala')),10000);c.on('open',()=>{clearTimeout(to);res();});c.on('error',e=>{clearTimeout(to);rej(e);});peer.on('error',e=>{clearTimeout(to);rej(e);});});
+    conns[hid]=c;c.on('data',m=>{if(!m)return;if(m.t==='snap'){for(const k in m.p)if(k!==me)pres[k]=m.p[k];}else if(m.t==='u'){if(m.id!==me)apply(m.id,m.d);}else if(m.t==='x')delete pres[m.id];});
+    c.on('close',()=>{delete pres[hid];});}
+  return{presence:async d=>{if(!alive)return;apply(me,d);if(host){for(const k in conns)send(conns[k],{t:'u',id:me,d});}else send(conns[hid],{t:'u',d});},
+    peers:()=>Object.keys(pres).map(id=>({peer:id,presence:pres[id],sameTab:id===me,kind:'viewer'})),
+    leave:async()=>{alive=false;try{peer.destroy();}catch(e){}}};}};}
 async function createRoom(){if(!room)return;audio();getName();code=genCode();
-  try{NR=await room.join('cd-'+code.toLowerCase());}catch(e){$('netNote').textContent='Não foi possível abrir a sala agora. Tente de novo em instantes.';return;}
+  $('netNote').textContent='Abrindo a sala...';let ok=false;for(let k=0;k<3&&!ok;k++){try{NR=await room.join('cd-'+code.toLowerCase(),{host:true});ok=true;}catch(e){code=genCode();}}
+  if(!ok){$('netNote').textContent='Não foi possível abrir a sala agora. Confira a internet e tente de novo.';return;}
   mode='net';isHost=true;G=null;resetLocal();NR.presence(Object.assign(myPresBase(),{h:1,lv:selLv,s:{v:3,ph:'lobby',lv:selLv}})).catch(()=>{});$('codeOut').textContent=code;showScreen('wait');}
 async function joinRoom(){if(!room)return;audio();const c=($('codeIn').value||'').trim().toUpperCase();
   if(!/^[A-Z]{4}$/.test(c)){$('netNote').textContent='O código tem 4 letras, como BKQZ.';$('codeIn').focus();return;}
@@ -2164,7 +2182,7 @@ function frame(now){
 requestAnimationFrame(frame);
 
 (async()=>{const C=window.claude;let r=null;try{r=C&&C.use?await C.use('room'):null;}catch(e){r=null;}room=r;
-  if(room)$('netNote').textContent='Quem cria a sala recebe um código. Os outros abrem este link e entram com ele.';
-  else{$('netNote').textContent='O modo online funciona quando este link é aberto no claude.ai com uma conta. Aqui dá para treinar sozinho.';$('createBtn').disabled=true;$('joinBtn').disabled=true;}})();
+  if(!room)room=makePeerRoom();
+  $('netNote').textContent='Quem cria a sala recebe um código de 4 letras. Os outros abrem este mesmo link e entram com ele.';})();
 })();
 </script>
